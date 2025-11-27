@@ -12,20 +12,14 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Carrega .env localmente
 load_dotenv()
 
 app = Flask(__name__)
-
-# --- CORS SIMPLIFICADO E ROBUSTO ---
-# Isso habilita CORS para todas as rotas e origens automaticamente
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Configura logs para aparecerem no painel do Render
 logging.basicConfig(level=logging.INFO)
 logger = app.logger
 
-# --- CONFIGURAÇÕES ---
 CANVI_BASE_URL = os.getenv("CANVI_API_URL", "https://gateway-production.service-canvi.com.br")
 CANVI_CLIENT_ID = os.getenv("CANVI_CLIENT_ID")
 CANVI_PRIVATE_KEY = os.getenv("CANVI_PRIVATE_KEY")
@@ -45,7 +39,8 @@ def obter_token():
     payload = {"client_id": CANVI_CLIENT_ID, "private_key": CANVI_PRIVATE_KEY}
     
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        # AUMENTADO PARA 90 SEGUNDOS 👇
+        response = requests.post(url, json=payload, timeout=90)
         response.raise_for_status()
         data = response.json()
         
@@ -61,7 +56,7 @@ def obter_token():
 
 def enviar_email_confirmacao(dados, copia_cola):
     if not EMAIL_REMETENTE or not EMAIL_SENHA:
-        logger.warning("⚠️ E-mail não configurado. Pulei o envio.")
+        logger.warning("⚠️ E-mail não configurado.")
         return
 
     try:
@@ -96,7 +91,6 @@ def home():
 
 @app.route('/api/pix', methods=['POST'])
 def gerar_pix():
-    # Log para debug no Render
     logger.info("🔔 Recebi uma chamada em /api/pix")
     
     try:
@@ -119,7 +113,9 @@ def gerar_pix():
         }
 
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        resp = requests.post(f"{CANVI_BASE_URL}/bt/pix", json=payload_canvi, headers=headers, timeout=30)
+        
+        # AUMENTADO PARA 90 SEGUNDOS 👇
+        resp = requests.post(f"{CANVI_BASE_URL}/bt/pix", json=payload_canvi, headers=headers, timeout=90)
         resp_data = resp.json()
 
         copia_cola = resp_data.get('data', {}).get('brcode') or resp_data.get('emv_payload')
