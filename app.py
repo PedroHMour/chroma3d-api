@@ -116,7 +116,7 @@ def gerar_pix_route():
         headers = { "Authorization": f"Bearer {token}", "Content-Type": "application/json" }
         
         # Dados calculados
-        valor_cobrar = 1.00
+        valor_cobrar = 990.00
         vencimento = (datetime.now() + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
         descricao = f"Entrada Tupana A1 - {data_front.get('nome')[:20]}"
         
