@@ -17,46 +17,59 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+# Configura logs
 logging.basicConfig(level=logging.INFO)
 logger = app.logger
 
-CANVI_BASE_URL = os.getenv("CANVI_API_URL", "https://gateway-production.service-canvi.com.br")
+# --- CONSTANTES IGUAIS AO SEU REFERENCIAL ---
+TOKEN_ENDPOINT = '/bt/token'
+PIX_ENDPOINT = '/bt/pix'
+
+# Variáveis de Ambiente
+CANVI_API_URL = os.getenv("CANVI_API_URL", "https://gateway-production.service-canvi.com.br")
 CANVI_CLIENT_ID = os.getenv("CANVI_CLIENT_ID")
 CANVI_PRIVATE_KEY = os.getenv("CANVI_PRIVATE_KEY")
+
 EMAIL_REMETENTE = os.getenv("EMAIL_USER")
 EMAIL_SENHA = os.getenv("EMAIL_PASS")
 
-_cache_token = {"token": None, "expira_em": 0}
+# Cache local
+_cache_token = { "token": None, "expira_em": 0 }
 
-def obter_token():
+# --- SUA FUNÇÃO DE TOKEN (ADAPTADA PARA FLASK) ---
+def _obter_token():
     global _cache_token
     agora = int(time.time())
     
     if _cache_token["token"] and _cache_token["expira_em"] > agora:
+        logger.info("[Auth] Usando token cache.")
         return _cache_token["token"]
 
-    url = f"{CANVI_BASE_URL}/bt/token"
-    payload = {"client_id": CANVI_CLIENT_ID, "private_key": CANVI_PRIVATE_KEY}
-    
+    url_token = f"{CANVI_API_URL}{TOKEN_ENDPOINT}"
+    headers = {'Content-Type': 'application/json'}
+    payload = { "client_id": CANVI_CLIENT_ID, "private_key": CANVI_PRIVATE_KEY }
+
     try:
-        # AUMENTADO PARA 90 SEGUNDOS 👇
-        response = requests.post(url, json=payload, timeout=90)
+        logger.info(f"[Auth] Solicitando token em: {url_token}")
+        response = requests.post(url_token, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
+        
         data = response.json()
         
         if data.get("token"):
             _cache_token["token"] = data["token"]
-            _cache_token["expira_em"] = agora + 80000 
+            _cache_token["expira_em"] = agora + 3000
             return data["token"]
-        
-        raise Exception("API Canvi não retornou token.")
+        else:
+            raise Exception(f"Sem token na resposta: {data}")
+
     except Exception as e:
-        logger.error(f"Erro Auth: {e}")
+        logger.error(f"[Auth] Erro: {e}")
         raise e
 
+# --- FUNÇÃO DE E-MAIL (BACKGROUND) ---
 def enviar_email_confirmacao(dados, copia_cola):
     if not EMAIL_REMETENTE or not EMAIL_SENHA:
-        logger.warning("⚠️ E-mail não configurado.")
         return
 
     try:
@@ -65,67 +78,81 @@ def enviar_email_confirmacao(dados, copia_cola):
         msg['To'] = dados.get('email')
         msg['Subject'] = "Reserva Confirmada - Chromatech Tupana A1"
 
-        html_body = f"""
-        <div style="font-family: Arial, sans-serif; padding: 20px;">
-            <h2>Olá, {dados.get('nome')}!</h2>
-            <p>Código Pix para pagamento:</p>
-            <pre style="background: #f4f4f4; padding: 15px;">{copia_cola}</pre>
-            <p>Valor: R$ 990,00</p>
-        </div>
+        body = f"""
+        <h2>Olá, {dados.get('nome')}</h2>
+        <p>Código Pix para pagamento (R$ 990,00):</p>
+        <pre style="background:#eee;padding:10px;">{copia_cola}</pre>
         """
-        msg.attach(MIMEText(html_body, 'html'))
+        msg.attach(MIMEText(body, 'html'))
 
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(EMAIL_REMETENTE, EMAIL_SENHA)
         server.sendmail(EMAIL_REMETENTE, dados.get('email'), msg.as_string())
         server.quit()
-        logger.info(f"✅ E-mail enviado para {dados.get('email')}")
-
+        logger.info("✅ E-mail enviado.")
     except Exception as e:
         logger.error(f"❌ Erro E-mail: {e}")
 
 @app.route('/')
 def home():
-    return "API Chroma3D Online 🚀", 200
+    return "API Online", 200
 
 @app.route('/api/pix', methods=['POST'])
-def gerar_pix():
-    logger.info("🔔 Recebi uma chamada em /api/pix")
-    
+def gerar_pix_route():
     try:
-        data = request.json
-        if not data:
-            return jsonify({"status": "error", "message": "JSON vazio"}), 400
+        # 1. Dados do Front
+        data_front = request.json
+        if not data_front:
+            return jsonify({"erro": "JSON inválido"}), 400
 
-        logger.info(f"Gerando Pix para: {data.get('nome')}")
+        logger.info(f"[Pix] Iniciando para: {data_front.get('nome')}")
 
-        token = obter_token()
+        # 2. Pega Token
+        token = _obter_token()
+
+        # 3. Prepara Payload IGUAL AO SEU CÓDIGO DE REFERÊNCIA
+        url_pix = f"{CANVI_API_URL}{PIX_ENDPOINT}"
+        headers = { "Authorization": f"Bearer {token}", "Content-Type": "application/json" }
         
+        # Dados calculados
+        valor_cobrar = 990.00
+        vencimento = (datetime.now() + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+        descricao = f"Entrada Tupana A1 - {data_front.get('nome')[:20]}"
+        
+        # PAYLOAD DO SEU CÓDIGO ANTIGO
         payload_canvi = {
-            "valor": "990.00",
-            "tipo_transacao": "pixCashin",
-            "vencimento": (datetime.now() + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S"),
-            "descricao": f"Entrada Tupana A1 - {data.get('nome', 'Cli')[:20]}",
-            "identificador_externo": str(uuid.uuid4()),
-            "identificador_movimento": str(uuid.uuid4()),
-            "enviar_qr_code": True
+            "valor": f"{valor_cobrar:.2f}", # Formata como string "990.00"
+            "tipo_transacao": "pixCashin", 
+            "vencimento": vencimento, 
+            "descricao": descricao,
+            "texto_instrucao": descricao, # Campo que faltava antes
+            "identificador_externo": str(uuid.uuid4()), 
+            "identificador_movimento": str(uuid.uuid4()), 
+            "enviar_qr_code": True # Seu código usava True, voltamos para True
         }
 
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        
-        # AUMENTADO PARA 90 SEGUNDOS 👇
-        resp = requests.post(f"{CANVI_BASE_URL}/bt/pix", json=payload_canvi, headers=headers, timeout=90)
-        resp_data = resp.json()
+        logger.info(f"[Pix] Enviando payload: {payload_canvi}")
 
-        copia_cola = resp_data.get('data', {}).get('brcode') or resp_data.get('emv_payload')
-        imagem_qr = resp_data.get('data', {}).get('qrcode')
+        # 4. Request (Timeout 60 igual sua referência)
+        response = requests.post(url_pix, headers=headers, json=payload_canvi, timeout=60)
+        
+        # Debug se der erro (Isso vai aparecer no log do Render)
+        if response.status_code >= 400:
+            logger.error(f"[Pix] Erro API Canvi ({response.status_code}): {response.text}")
+            return jsonify({"erro": "Erro na operadora", "detalhe": response.text}), response.status_code
+
+        data_canvi = response.json()
+
+        # 5. Normaliza para o Front
+        copia_cola = data_canvi.get('data', {}).get('brcode') or data_canvi.get('emv_payload')
+        imagem_qr = data_canvi.get('data', {}).get('qrcode')
 
         if not copia_cola:
-            logger.error(f"Erro Canvi: {resp_data}")
-            return jsonify({"status": "error", "message": "Erro ao gerar Pix na operadora."}), 400
+            return jsonify({"erro": "Pix não gerado", "debug": data_canvi}), 400
 
-        threading.Thread(target=enviar_email_confirmacao, args=(data, copia_cola)).start()
+        # 6. E-mail em background
+        threading.Thread(target=enviar_email_confirmacao, args=(data_front, copia_cola)).start()
 
         return jsonify({
             "status": "success",
@@ -133,9 +160,12 @@ def gerar_pix():
             "imagem_qr": imagem_qr
         })
 
+    except requests.exceptions.ReadTimeout:
+        logger.error("[Pix] Timeout da Canvi")
+        return jsonify({"erro": "Gateway demorou muito"}), 504
     except Exception as e:
-        logger.error(f"Erro Geral: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logger.error(f"[Pix] Exception: {e}")
+        return jsonify({"erro": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
